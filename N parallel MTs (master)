@@ -1,0 +1,685 @@
+#pragma rtGlobals=3		// Use modern global access method and strict wave access.
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// 17_0117 Chip revisiting this Monte Carlo simulation but in a much simpler context
+//  
+// Now just trying to ask whether the level of sister coordination can be increased by modeling the
+// chromatin that connects sister KTs with a viscoelastic rather than purely elastic model.
+//
+// My intuition says yes, the inclusion of viscoelasticity will be sufficient to improve coordination,
+// provided that the time constant for relaxation of the viscoelastic material is quicker than the typical
+// time required for a KT to switch direction.  I want to test this with simulation.
+// I don't care about inclusion of spatial cues.  If the sister KTs oscillate far off the metaphase plate,
+// so be it.  All I care about is the degree to which their movements are coordinated.
+//
+// 18_0109 modifications to test predicted durations for coordinated runs, etc, with simple assumptions
+//
+// I've made a bit of progress, I think, in predicting the durations over which a pair of sisters will remain in
+// a state of coordinated movement, or in a state of uncoordinated movement, given initial conditions and
+// assuming simple viscoelastic material connecting the sisters.  For now, I'm assuming fixed velocities for
+// KT motion in P and AP directions (i.e., ignoring force dependence in growth and shortening speeds).
+// But I'm allowing exponential force dependence in switch rates.  Perhaps later I can allow speeds to vary
+// as well.  My objective now is to test whether my predictions are correct by comparison with simulation.
+// Thus I will start the pair in a given state and ask how long it takes for them to switch out of that state.
+//
+// 19_0224 modifications to simulate two parallel MTs sharing a load -- a situation we're also creating experimentally
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// the following functions are for performing monte carlo simulations
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// this function creates all the waves needed for the kpsim function below
+// It also sets the "intrinsic" assembly velocity for each tip
+// These assembly velocities, rate parameters, and force sensitivities are from
+// the 2010 Akiyoshi paper.
+
+function kpsim_initialize(tott,maxstep,N)
+  variable tott // maximum time per simulation [s]
+  variable maxstep // maximum step size allowed [s]
+  variable N // Number of parallel MTs
+  variable maxit = round(tott/maxstep) + 1 // maximum allowed number of total steps
+  variable i // counter
+  wave w,o // parameter and simulation conditions waves
+  variable different_velocities = o[4] // boolean to allow assembling MTs to have different velocities
+  variable different_dvelocities = o[6] // boolean to allow disassembling MTs to have different velocities
+  variable preset_velocity = o[3] // boolean that lets you preset the assembly velocities of each MT
+  variable initially_coordinated = o[0] // boolean that says if both MTs start out assembling or if one is in disassembly
+  variable unloaded_gvel = w[4] // unloaded average growth velocity [nm/s]
+  variable unloaded_svel = w[6] // unloaded average shortening velocity [nm/s]
+  
+  
+// one year in the lab and I'm already making waves!
+  
+  make/o/n=(N) va_intrinsic,vd_intrinsic // unloaded assembly/disassembly velocity for each MT
+  make/o/n=(maxit) coordflag // flag for coordinated movement
+  make/o/n=(maxit,N) xp // positions for each parallel MT [um]
+  make/o/n=(maxit,N) ap // MT state (assembly = 1, disassembly = 0)
+  make/o/n=(maxit,N) vp // velocities for each MT tip [um/s]
+  make/o/n=(maxit,N) tp // wave to hold timepoints for each MT tip [s]
+  make/o/n=(maxit,N) force // force on each tip over time
+  make/o/n=(N) cxp,cap,cforce,ctp // current MT x-positions, states, forces, and times
+  make/o/n=(1) endpoint, endtime, last_end_event 
+  		// (endtime, endpoint) is the (x,t) where/when the simulation ended
+  		// last_end_event records the most recent end event type (state switch, detach, or low-tension violation)
+
+  for(i=0;i<N;i++) // for each MT
+    xp[0][i] = 0 // MTs at the same starting point (defined as x = 0 [um]) 
+    tp[0][i] = 0 // start at time = 0 [s]
+    ap[0][i] = 1 // MTs are all assembling
+    vp[0][i] = unloaded_gvel/1000 // MT assembling at average unloaded growth velocity [um/s]
+    force[0][i] = 0 // all tips start without tension [pN]
+  endfor
+  
+  if(different_velocities == 1)
+  		// allow each MT to have a different unloaded assembly velocity
+  		if(preset_velocity == 1) // Use the user-input preset unloaded assembly velocities
+  		  va_intrinsic[0] = w[20] // preset velocity 1
+  		  va_intrinsic[1] = w[21] // preset velocity 2
+  		else // set unloaded assembly velocities for each MT with one of the assembly velocity chooser functions
+  		  	avelocity_choose_v3(N) 
+  		endif
+  		for(i=0;i<N;i++) // for each MT
+  			vp[0][i]=va_intrinsic[i]/1000     
+  				// set the initial velocity to the unloaded velocities [um/s]
+  				// I guess the idea is that this is the moment just before force application?
+  				// We could change this to just splitting the force evenly between MTs
+  				// but it probably doesn't matter that much because the force and velocity change
+  				// as soon as the first timestep is taken. It might be more of a problem if/when
+  				// we start using viscoelasticity, although maybe not if we use a small enough
+  				// initial timestep.
+  		endfor
+  	endif
+  	
+  	if(different_dvelocities == 1)
+  		// allow each MT to have a different unloaded disassembly velocity
+  		dvelocity_choose(N) // set unloaded disassembly velocities
+  	endif
+  	
+  	if(initially_coordinated == 0) 
+  		// One MT is in assembly and the other is in disassembly (mostly for N = 2)
+  		ap[0][1] = 0 // One MT starts in disassembly (ap = 0)
+  		if(different_dvelocities == 1)
+  			// if each MT has a different unloaded disassembly velocity
+  			vp[0][1]=vd_intrinsic[1]/1000 
+  				// set the initial disassembling MT velocity to the chosen velocity [um/s]
+  		else
+  		 	vp[0][1] = -unloaded_svel/1000 
+  		 		// set the initial disassembling MT velocity to the average unloaded shortening speed [um/s]
+  		endif
+  	endif
+end
+//------------------------------------------------------------------------------------
+// This function does Monte Carlo simulation of N MTs in a "parallel" arrangement.
+// It uses the Gillespie algorithm to pick a reaction and a reaction time based
+// on their relative hazard rates, which are in turn dependent on the applied force.
+// The user inputs total time to be simulated per trace, maximum timestep size,
+// and number of MTs being simulated.
+// The function outputs each tip position, force, velocity, and direction over time in waves.
+// It also outputs information about how the simulation ends, which is saved in the
+// last_end_event wave and appended to the x_vs_t graph.
+// These assembly velocities, rate parameters, and force sensitivities are from
+// the 2010 Akiyoshi paper.
+
+function kpsim(tott,maxstep,N)
+  variable tott // total amount of time per trace [s]
+  variable maxstep // maximum timestep [s] to prevent force 
+  		// (and thus hazard rate) from evolving too much in one timestep
+  variable N // number of parallel MTs
+  variable maxit = round(tott/maxstep) + 1 // maximum number of allowed iterations
+  variable i = 1 // counter
+  variable j // counter that says which MT is being simulated
+  variable done = 0 
+  		// boolean to indicate whether to stop simulation (ex: if detach occurs)
+  variable timestep // Chosen with Gillespie algorithm unless chosen timestep exceeds maxstep
+  variable endtip // which MT ended the simulation
+
+  wave w,o // parameter and simulation options waves
+  wave xp,ap,vp,tp,coordflag,force // position, state of assembly/disassembly, velocity, force,
+  		// and for two MTs, whether they are moving in the same or different directions
+  wave cxp,cap,cforce,ctp // waves to hold state of the system at current timepoint
+  wave endpoint, endtime // waves with endpoint and corresponding time
+  wave last_end_event // tells whether the run has ended because of catastrophe (0),
+  							// rescue (1), detachment during assembly (2) or disassembly (3),
+  							// or a compression limit violation (4)
+  wave va_intrinsic,vd_intrinsic 
+  		// waves containing unloaded assembly and disassembly velocities for each MT [nm/s]
+  
+  // sets options and parameters from o and w waves
+  variable single_state = o[1] 
+  		// boolean that says whether MT state switches end the simulation
+  variable low_tension_limit = o[2] 
+  		// boolean that adds in low-tension limit 
+  		// 1 for comparison with analytical solution
+  		// 0 for comparison with in vitro experiments
+  variable different_velocities = o[4] 
+  		// boolean that allows MTs to have different assembly velocities
+  variable ffnc = o[5] 
+  		// boolean that tells program to use a different force function (hasn't been used in a while)
+  variable low_t_limit = w[15] // low-tension limit [pN]
+  variable different_dvelocities = o[6] 
+  		// boolean that allows MTs to have different disassembly velocities
+  variable detach_on = o[7] // boolean that allows MTs to detach
+  variable dogterom_on = o[8] 
+  		// boolean that enables different rules for tension vs compression
+  		// not created yet but could be based on some of the work by Dogterom et al.
+  
+  make/o/n=(1) state_switches_per_run = 0
+  		// keeps track of number of state switches in multi-state runs
+    
+  removefromgraph /W=x_vs_t /Z endpoint // remove the endpoint from the last run
+  		// /Z makes it not get fussy if the point doesn't exist
+  do
+    // update system state
+    for(j=0;j<N;j++) // for each MT
+      cxp[j]=xp[i-1][j] // current x-position
+      cap[j]=ap[i-1][j] // current direction
+      ctp[j]=tp[i-1][j] // current time
+    endfor
+    
+    // calculate force on each tip based on current system state
+    if(ffnc == 0) // Use the standard model
+      pforce1(N) // Puts force values in the cforce wave
+    else // uses force-time function that results in max failure rate at a positive value
+   //   pforce_offset() // fills cforce wave based on the user-input function and time
+    endif
+    
+    // compute changes to MT velocity and position
+    for(j=0;j<N;j++) // for each MT tip
+    
+    	// check for compression limit violation
+      if(cforce[j] < low_t_limit && low_tension_limit == 0) // if the compression limit is on
+      		// and the force on the tip is less than that compression limit
+        done = 1 // end simulation if an MT is over the single MT compression limit
+        endtip = j // MT j was over the compressive limit
+        last_end_event = 4 // current end event is compression limit violation
+//      	print("Tip " + num2str(j) + " failed by exceeding the compressive limit of " + num2str(low_t_limit) + " pN")
+      endif
+    
+    // based on system state, pick a reaction and timestep using Gillespie algorithm
+      
+      if(cap[j]==1) // kchore is moving AP
+        timestep = -ln(abs(enoise(1)))/(Wc(cforce[j])+Wdeta(cforce[j])) 
+        		// timestep chosen from integral of cumulative distribution function
+        		// at the current force values
+        if(timestep > maxstep) // timestep exceeds the maxstep set by the user
+          timestep = maxstep 
+          	// I set this in case the timestep I chose made v and x so different that the force was greatly altered
+          ap[i][j]=1 // No reaction occurs, MT continues to be in assembly
+        elseif(abs(enoise(1))<(Wdeta(cforce[j])/(Wdeta(cforce[j])+Wc(cforce[j]))) && detach_on == 1)
+          // pick a reaction with Gillespie algorithm (detach or catastrophe)
+          done = 1 // end simulation because of detachment
+          endtip = j // MT j detached
+          last_end_event = 2 // current end event is detachment during assembly
+        else // chosen reaction is catastrophe
+          ap[i][j]=0  // MT switches to disassembly
+          state_switches_per_run += 1 
+          if(single_state == 1) // catastrophes end the simulation in single-state experiments
+          	last_end_event = 0 // current end event is catastrophe
+          	done = 1 // end the simulation
+          	endtip = j // MT j catastrophed
+          endif
+        endif
+        
+        // update velocity based on force and position based on velocity
+        if(different_velocities == 1) 
+        		// calculate assembly velocities based on chosen "intrinsic" velocity
+        		// of the given tip
+        		vp[i][j] = va_intrinsic[j]*exp(cforce[j]/w[5])/1000
+        			// uses intrinsic unloaded velocity with the same exponential force relation
+        else
+        		vp[i][j]=U(cforce[j]) 
+        			// use average unloaded velocity with the same exponential force relation
+        endif
+        xp[i][j]=cxp[j]+vp[i][j]*timestep  // update position using new velocity
+        
+      else // kchore is moving P
+        timestep = -ln(abs(enoise(1)))/(Wr(cforce[j])+Wdetd(cforce[j]))
+        		// timestep chosen from integral of cumulative distribution function
+        		// at the current force values
+        if(timestep > maxstep) // timestep exceeds the maxstep set by the user
+          timestep = maxstep
+          	// I set this in case the timestep I chose made v and x so different that the force was greatly altered
+          ap[i][j]=0 // No reaction occurs, MT continues to be in disassembly
+        elseif(abs(enoise(1))<(Wdetd(cforce[j])/(Wdetd(cforce[j])+Wr(cforce[j]))) && detach_on == 1)
+          //low_tension_limit == 1 ends the simulation for either rescue or detachment if the MT is in disassembly
+          // pick a reaction with Gillespie algorithm (detach or rescue)
+          done = 1 // end simulation because of detachment
+          endtip = j // MT j detached
+          last_end_event = 3 // current end event is detachment during disassembly
+        else // chosen reaction is rescue
+          ap[i][j]=1 // kchore switches to AP
+          state_switches_per_run += 1
+          if(single_state == 1) // rescues end the simulation in single-state experiments
+          	last_end_event = 1 // current end event is rescue
+          	done = 1 // end the simulation
+          	endtip = j // MT j rescued
+          endif
+        endif
+        if(different_dvelocities == 1)
+        	 vp[i][j] = vd_intrinsic[j]*exp(cforce[j]/w[7])/1000
+        else
+        	 vp[i][j]=-V(cforce[j]) // update velocity with current force
+        endif
+        xp[i][j]=cxp[j]+vp[i][j]*timestep // update position using new velocity
+      endif
+      
+      tp[i][j]=ctp[j]+timestep // update timestep
+      force[i][j] = cforce[j] // Update force
+      
+      if(done == 1) // end the simulation
+        endpoint = xp[i][endtip] // simulation ended at this x-position
+        endtime = tp[i][endtip] // simulation ended at this time
+      endif
+    endfor
+    
+    // determines what proportion of MTs are moving in the same direction ("coordinated")
+    if(sum(cap)>(N/2)) // Most MTs are moving in the "plus" direction
+      coordflag[i]=sum(cap)/N // coordflag is higher (closer to 1) the more MTs are moving in the plus direction
+    else // Most MTs are moving in the "minus" direction
+      coordflag[i]=(N-sum(cap))/N // coordflag is higher the more MTs are moving in the minus direction
+    endif
+    i+=1 // increase counter by 1 for next timestep
+  while(maxit > i && done == 0)  // quits when first MT is past the total time or an "end event" occurs
+  
+// Draw a point on the graph describing where, when, and what the end event was
+  if(last_end_event[0] == 4) // MT reached compressive limit
+    appendtograph /W=x_vs_t /C=(65535,0,0),endpoint vs endtime // red for compression
+  elseif((done == 1 && single_state == 0) || last_end_event[0] == 2 || last_end_event[0] == 3) // MT detached
+    appendtograph /W=x_vs_t /C=(0,65535,0),endpoint vs endtime // green for detachment
+  elseif(single_state == 1) // MT switched states
+    appendtograph /W=x_vs_t /C=(0,0,65535),endpoint vs endtime // blue for state switch
+  endif
+  ModifyGraph /W=x_vs_t mode(endpoint)=2,lsize(endpoint)=10 // make the endpoint bigger and a dot
+  
+  // delete unfilled entries if the simulation ended earlier than the specified
+  // maximum runtime
+  deletepoints i,(maxit-i),xp
+  deletepoints i,(maxit-i),tp
+  deletepoints i,(maxit-i),ap
+  deletepoints i,(maxit-i),vp
+  deletepoints i,(maxit-i),coordflag
+  deletepoints i,(maxit-i),force
+
+  wavestats/q coordflag // calculates V_avg below and describes what proportion
+  		// of time the MTs are moving in the same direction for multi-state experiments
+  
+  return V_avg // returns average from the last wavestats (coordflag)
+end
+
+//--------------------------------------------------------------------------------------------------------------------------------------------//
+// function runs kpsim (above) multiple times to get statistics
+function kpsim_rep(tott,maxstep,num,N)
+  variable tott // total amount of time (in seconds) per trace
+  variable num // number of times to repeat kpsim
+  variable maxstep // maximum allowed step size 
+  variable N // number of parallel MTs
+  variable maxit = round(tott/maxstep) + 1 // maximum number of iterations per
+  wave tp,endpoint // time for each MT
+  wave xp,vp // position and velocity for each MT
+  variable i,j // counters
+  variable hist_step = 30 // bin size for histogram
+  wave o // wave with simulation conditions
+  wave state_switches_per_run
+  make/o/n=(5) end_event 
+  //0: catastrophe, 1:rescue, 2:detach during assembly, 3: detach during disassembly,4: over compression limit
+  end_event = 0 // reset end event counters
+  wave last_end_event // most recent end event wave/value
+  last_end_event = 5 
+  		// initialize with impossible end event so stuff doesn't get mis-sorted
+
+  variable avg_vel_onerun_1,avg_vel_onerun_2 // average velocity of each MT tip
+  make/o/n=(num) avgd_20,avgd_40,avgd_60,avgd_80,avgd_100,avgd_120,avgd_140,avgd_160,avgd_180,avgd_200,avgd_220,avgd_240,avgd_260
+  make/o/n=(num) avgcoord,avgt,avgd,avgd_norm,avgt_a,avgt_d,avgt_c,avgt_r,avgt_comp
+  make/o/n=(num) front_tip_catastrophe,back_tip_catastrophe,hist_t,finald, avg_switches, avg_sep_vel
+    // wave to hold average coord level, simulation time, and 
+    // distance of tips from each other for each repeat
+  make/o/n=(num) avgt_50,avgt_100,avgt_150,avgt_200,avgt_250,avgt_300,avgt_350,avgt_400,avgt_450,avgt_500,avgt_550,avgt_600,avgt_650,avgt_700,avgt_750,avgt_800,avgt_850,avgt_900,avgt_950,avgt_1000,avgt_1050,avgt_1100,avgt_1150
+
+  avgt_50 = 0
+  avgt_100 = 0
+  avgt_150 = 0
+  avgt_200 = 0
+  avgt_250 = 0
+  avgt_300 = 0
+  avgt_350 = 0
+  avgt_400 = 0
+  avgt_450 = 0
+  avgt_500 = 0
+  avgt_550 = 0
+  avgt_600 = 0
+  avgt_650 = 0
+  avgt_700 = 0
+  avgt_750 = 0
+  avgt_800 = 0
+  avgt_850 = 0
+  avgt_900 = 0
+  avgt_950 = 0
+  avgt_1000 = 0
+  avgt_1050 = 0
+  avgt_1100 = 0
+  avgt_1150 = 0
+  
+  for(i=0;i<num;i++)
+    kpsim_initialize(tott,maxstep,N)
+    	// create waves to store simulation information and choose intrinsic velocities
+    avgcoord[i] = kpsim(tott,maxstep,N) // record the average coord levels for each repeat
+    	// this also runs the kpsim function to store simulation information in the waves
+    	// created by kpsim_initialize
+    avgt[i] = tp[DimSize(tp,0)-1][1] // simulation time for first MT
+    avg_switches[i] = state_switches_per_run[0]
+    
+    avg_vel_onerun_1 = 0 //reset
+    avg_vel_onerun_2 = 0 //reset
+    for(j=0;j<dimsize(vp,0);j++)
+    	//puts separation velocity in a single wave
+    	avg_vel_onerun_1 += vp[j][0]
+    	avg_vel_onerun_2 += vp[j][1]
+    endfor
+    avg_vel_onerun_1 = avg_vel_onerun_1/dimsize(vp,0)
+    avg_vel_onerun_2 = avg_vel_onerun_2/dimsize(vp,0)
+    avg_sep_vel[i] = abs(avg_vel_onerun_1-avg_vel_onerun_2) // difference between tip velocities
+    
+    if(last_end_event[0] == 0) // end event is catastrophe (0)
+    	end_event[0] += 1 // add one to the catastrophe count
+    	avgt_c[end_event[0]-1] = avgt[i] // add sim time to catastrophe sim times
+    elseif(last_end_event[0] == 1) // end event is rescue (1)
+      end_event[1] += 1 // add one to the rescue count
+      avgt_r[end_event[1]-1] = avgt[i] // add sim time to rescue sim times
+    elseif(last_end_event[0] == 2) // end event is detachment during assembly (2)
+      end_event[2] += 1 // add one to the detachment during assembly count
+      avgt_a[end_event[2]-1] = avgt[i] // add sim time to detachment during assembly sim times
+    elseif(last_end_event[0] == 3) // end event is detachment during disassembly (3)
+    	end_event[3] += 1 // add one to the detachment during disassembly count
+    	avgt_d[end_event[3]-1] = avgt[i] // add sim time to detachment during disassembly sim times
+    elseif(last_end_event[0] == 4) // end event is reaching the compression limit (4)
+      end_event[4] += 1 // add one to the compression violation count
+      avgt_comp[end_event[4]-1] = avgt[i] // add sim time to compression violation sim times
+    endif
+    make/o/n=(DimSize(xp,0)) distances // wave to hold each MT separation distance
+    for(j=0;j<numpnts(distances);j++) // for each timepoint
+    	distances[j]= abs(xp[j][0]-xp[j][1]) 
+    		// separation distance between tips is the difference in their positions
+    endfor
+    avgd[i] = mean(distances) // average separation distances for these runs
+    
+    //for(j=0;j<numpnts(distances);j++)
+    //	if(distances[j]>1.2) // distance cap in um
+    //		deletepoints j,(numpnts(distances)-j), distances
+    //		break
+    //	endif
+    //endfor
+    
+    if(numpnts(distances)>=(20/maxstep+1))
+      avgd_20[i] = distances[(20/maxstep)]
+    else
+    	avgd_20[i] = Nan
+    endif
+    if(numpnts(distances)>=(40/maxstep+1))
+    	avgd_40[i] = distances[40/maxstep]
+    else
+    	avgd_40[i] = Nan
+    endif
+    if(numpnts(distances)>=((60/maxstep)+1))
+      avgd_60[i] = distances[60/maxstep]
+    else
+    	avgd_60[i] = Nan
+    endif
+    if(numpnts(distances)>=((80/maxstep)+1))
+    	avgd_80[i] = distances[80/maxstep]
+    else
+    	avgd_80[i] = Nan
+    endif
+    if(numpnts(distances)>=((100/maxstep)+1))
+    	avgd_100[i] = distances[100/maxstep]
+	 else
+    	avgd_100[i] = Nan
+	 endif
+    if(numpnts(distances)>=((120/maxstep)+1))
+    	avgd_120[i] = distances[120/maxstep]
+    else
+    	avgd_120[i] = Nan
+    endif
+    if(numpnts(distances)>=((140/maxstep)+1))
+	   avgd_140[i] = distances[140/maxstep]
+	 else
+    	avgd_140[i] = Nan
+	 endif
+    if(numpnts(distances)>=((160/maxstep)+1))
+	   avgd_160[i] = distances[160/maxstep]
+	 else
+    	avgd_160[i] = Nan
+	 endif
+    if(numpnts(distances)>=((180/maxstep)+1))
+   	avgd_180[i] = distances[180/maxstep]
+    else
+    	avgd_180[i] = Nan
+    endif
+    if(numpnts(distances)>=((200/maxstep)+1))
+    	avgd_200[i] = distances[200/maxstep]
+    else
+    	avgd_200[i] = Nan
+    endif
+    if(numpnts(distances)>=((220/maxstep)+1))
+    	avgd_220[i] = distances[220/maxstep]
+    else
+    	avgd_220[i] = Nan
+    endif
+    if(numpnts(distances)>=((240/maxstep)+1))
+	 	avgd_240[i] = distances[240/maxstep]
+	 else
+    	avgd_240[i] = Nan
+	 endif
+    if(numpnts(distances)>=((260/maxstep)+1))
+    	avgd_260[i] = distances[260/maxstep]
+    else
+    	avgd_260[i] = Nan
+    endif
+    
+    // computes time required to exceed prescribed distance
+    for(j=0;j<numpnts(distances)-1;j++)
+    	if(distances[j]>.05 && avgt_50[i] == 0) // tip separation is less than 50 nm
+    		avgt_50[i] = j*maxstep
+    	endif
+    	if(distances[j]>.1 && avgt_100[i] == 0) // tip separation is less than 100 nm
+    		avgt_100[i] = j*maxstep
+    	endif
+    	if(distances[j]>.15 && avgt_150[i] == 0) // tip separation is less than 150 nm
+    		avgt_150[i] = j*maxstep
+    	endif
+    	if(distances[j]>.2 && avgt_200[i] == 0) // tip separation is less than 200 nm
+    		avgt_200[i] = j*maxstep
+    	endif
+    	if(distances[j]>.25 && avgt_250[i] == 0) // tip separation is less than 250 nm
+    		avgt_250[i] = j*maxstep
+    	endif
+    	if(distances[j]>.3 && avgt_300[i] == 0) // tip separation is less than 300 nm
+    		avgt_300[i] = j*maxstep
+    	endif
+    	if(distances[j]>.35 && avgt_350[i] == 0) // tip separation is less than 350 nm
+    		avgt_350[i] = j*maxstep
+    	endif
+    	if(distances[j]>.4 && avgt_400[i] == 0) // tip separation is less than 400 nm
+    		avgt_400[i] = j*maxstep
+    	endif
+    	if(distances[j]>.45 && avgt_450[i] == 0) // tip separation is less than 450 nm
+    		avgt_450[i] = j*maxstep
+    	endif
+    	if(distances[j]>.5 && avgt_500[i] == 0) // tip separation is less than 500 nm
+    		avgt_500[i] = j*maxstep
+    	endif
+    	if(distances[j]>.55 && avgt_550[i] == 0) // tip separation is less than 550 nm
+    		avgt_550[i] = j*maxstep
+    	endif
+    	if(distances[j]>.6 && avgt_600[i] == 0) // tip separation is less than 600 nm
+    		avgt_600[i] = j*maxstep
+    	endif
+    	if(distances[j]>.65 && avgt_650[i] == 0) // tip separation is less than 650 nm
+    		avgt_650[i] = j*maxstep
+    	endif
+    	if(distances[j]>.7 && avgt_700[i] == 0) // tip separation is less than 700 nm
+    		avgt_700[i] = j*maxstep
+    	endif
+    	if(distances[j]>.75 && avgt_750[i] == 0) // tip separation is less than 750 nm
+    		avgt_750[i] = j*maxstep
+    	endif
+    	if(distances[j]>.8 && avgt_800[i] == 0) // tip separation is less than 800 nm
+    		avgt_800[i] = j*maxstep
+    	endif
+    	if(distances[j]>.85 && avgt_850[i] == 0) // tip separation is less than 850 nm
+    		avgt_850[i] = j*maxstep
+    	endif
+    	if(distances[j]>.9 && avgt_900[i] == 0) // tip separation is less than 900 nm
+    		avgt_900[i] = j*maxstep
+    	endif
+    	if(distances[j]>.95 && avgt_950[i] == 0) // tip separation is less than 950 nm
+    		avgt_950[i] = j*maxstep
+    	endif
+    	if(distances[j]>1 && avgt_1000[i] == 0) // tip separation is less than 1000 nm
+    		avgt_1000[i] = j*maxstep
+    	endif
+    	if(distances[j]>1.05 && avgt_1050[i] == 0) // tip separation is less than 1050 nm
+    		avgt_1050[i] = j*maxstep
+    	endif
+    	if(distances[j]>1.1 && avgt_1100[i] == 0) // tip separation is less than 1100 nm
+    		avgt_1100[i] = j*maxstep
+    	endif
+    	if(distances[j]>1.15 && avgt_1150[i] == 0) // tip separation is less than 1150 nm
+    		avgt_1150[i] = j*maxstep
+    	endif
+    endfor
+    
+    if(avgt_50[i] == 0)
+    	avgt_50[i] = Nan
+    endif
+    if(avgt_100[i] == 0)
+    	avgt_100[i] = Nan
+    endif
+    if(avgt_150[i] == 0)
+    	avgt_150[i] = Nan
+    endif
+    if(avgt_200[i] == 0)
+    	avgt_200[i] = Nan
+    endif
+    if(avgt_250[i] == 0)
+    	avgt_250[i] = Nan
+    endif
+    if(avgt_300[i] == 0)
+    	avgt_300[i] = Nan
+    endif
+    if(avgt_350[i] == 0)
+    	avgt_350[i] = Nan
+    endif
+    if(avgt_400[i] == 0)
+    	avgt_400[i] = Nan
+    endif
+    if(avgt_450[i] == 0)
+    	avgt_450[i] = Nan
+    endif
+    if(avgt_500[i] == 0)
+    	avgt_500[i] = Nan
+    endif
+    if(avgt_550[i] == 0)
+    	avgt_550[i] = Nan
+    endif
+    if(avgt_600[i] == 0)
+    	avgt_600[i] = Nan
+    endif
+    if(avgt_650[i] == 0)
+    	avgt_650[i] = Nan
+    endif
+    if(avgt_700[i] == 0)
+    	avgt_700[i] = Nan
+    endif
+    if(avgt_750[i] == 0)
+    	avgt_750[i] = Nan
+    endif
+    if(avgt_800[i] == 0)
+    	avgt_800[i] = Nan
+    endif
+    if(avgt_850[i] == 0)
+    	avgt_850[i] = Nan
+    endif
+    if(avgt_900[i] == 0)
+    	avgt_900[i] = Nan
+    endif
+    if(avgt_950[i] == 0)
+    	avgt_950[i] = Nan
+    endif
+    if(avgt_1000[i] == 0)
+    	avgt_1000[i] = Nan
+    endif
+    if(avgt_1050[i] == 0)
+    	avgt_1050[i] = Nan
+    endif
+    if(avgt_1100[i] == 0)
+    	avgt_1100[i] = Nan
+    endif
+    if(avgt_1150[i] == 0)
+    	avgt_1150[i] = Nan
+    endif
+        
+    finald[i] = distances[numpnts(distances)-1]
+    	// the final separation distance is the last point in the distances wave
+    if(endpoint[0]>((xp[dimsize(xp,0)-1][0]+xp[dimsize(xp,0)-1][1])/2) && last_end_event[0] == 0)
+    	front_tip_catastrophe[i]=1 // front tip catastrophes
+    	back_tip_catastrophe[i]=0
+    elseif(last_end_event[0] == 0)
+    	back_tip_catastrophe[i] = 1
+    	front_tip_catastrophe[i] = 0
+    else
+    	front_tip_catastrophe[i] = 0
+    	back_tip_catastrophe[i] = 0
+    endif
+  endfor
+    
+  deletepoints end_event[0],(num-end_event[0]-1),avgt_c // -1 gives one extra 0 timepoint to each histogram
+  deletepoints end_event[1],(num-end_event[1]-1),avgt_r // this shouldn't matter with sufficient data
+  deletepoints end_event[2],(num-end_event[2]-1),avgt_a // but it does prevent lack of catastrophe from breaking
+  deletepoints end_event[3],(num-end_event[3]-1),avgt_d // the histogram function
+  deletepoints end_event[4],(num-end_event[4]-1),avgt_comp
+  
+  histogram /B={0,hist_step,1000} avgt,hist_t
+  make/o/n=(numpnts(hist_t)) hist_t_normal,time_hist,hist_t_a,hist_t_c,hist_t_d,hist_t_r,hist_t_comp
+  make/o/n=(numpnts(hist_t)) hist_t_a_normal,hist_t_c_normal,hist_t_d_normal,hist_t_r_normal,hist_t_comp_normal
+  hist_t_normal = hist_t/(num*hist_step)
+  time_hist = x*hist_step 
+  histogram /B={0,hist_step,1000} avgt_a,hist_t_a
+  histogram /B={0,hist_step,1000} avgt_d,hist_t_d
+  histogram /B={0,hist_step,1000} avgt_c,hist_t_c
+  histogram /B={0,hist_step,1000} avgt_r,hist_t_r
+  histogram /B={0,hist_step,1000} avgt_comp,hist_t_comp
+  hist_t_a_normal = hist_t_a/(num*hist_step)
+  hist_t_c_normal = hist_t_c/(num*hist_step)
+  hist_t_d_normal = hist_t_d/(num*hist_step)
+  hist_t_r_normal = hist_t_r/(num*hist_step)
+  hist_t_comp_normal = hist_t_comp/(num*hist_step)
+
+  // histograms for end events
+end
+//----------------------------------------------------------------------------------
+// The functions below haven't been used for a while
+
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// function predicts the balance force, at which net MT growth equals net MT shortening
+function balforce()
+  wave w // holds parameter values, including MT dynamic rates and material props for chromatin
+  variable Vg = w[4]/1000 // unloaded growth rate converted to [um/s] 
+  variable Vs = w[6]/1000 // unloaded shortening rate converted to [um/s]
+  variable ko_cat = w[2]*3600 // unloaded catastrophe rate converted to [1/s]
+  variable ko_res = w[0]*3600 // unloaded rescue rate converted to [1/s] 
+  variable J = (Vg/ko_cat)/(Vs/ko_res) // ratio of excursion distances, growth over shortening, dimensionless
+
+  variable Fg = w[5] // force sensitivity for growth speed, [pN]
+  variable Fs = w[7] // force sensitivity for shortening speed, [pN]
+  variable F_cat = w[3] // force sensitivity for catastrophe rate, [pN]
+  variable F_res = w[1] // force sensitivity for rescue rate, [pN]
+  variable Q = (-1/Fg)+(1/Fs)+(-1/F_cat)+(1/F_res) // encapsulates force sensitivity, [1/pN] ***perhaps wrong???
+
+  return -1*ln(J)/Q // balance force, [pN]
+end
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// function predicts the ratio of excursion distances, growth over shortening, at a given force
+function Jval(F)
+  variable F // force [pN]  
+  variable answer = (U(F)/Wc(F))/(V(F)/Wr(F)) // ratio of excursion distances, growth over shortening, dimensionless
+  return answer
+end
+
+//-------------------------------------------
