@@ -160,6 +160,8 @@ function kpsim(tott,maxstep,N)
   variable dogterom_on = o[8] 
   		// boolean that enables different rules for tension vs compression
   		// not created yet but could be based on some of the work by Dogterom et al.
+  variable switch_on = o[9]
+  		// boolean that enables switching from/to assembly/disassembly
   
   make/o/n=(1) state_switches_per_run = 0
   		// keeps track of number of state switches in multi-state runs
@@ -199,7 +201,8 @@ function kpsim(tott,maxstep,N)
       if(cap[j]==1) // kchore is in assembly
         timestep = -ln(abs(enoise(1)))/(Wc(cforce[j])+Wdeta(cforce[j])) 
         		// timestep chosen from integral of cumulative distribution function at the current force values
-        if(timestep > maxstep) // timestep exceeds the maxstep set by the user
+        if(timestep > maxstep || (switch_on == 0 && detach_on == 0)) 
+        		// timestep exceeds the maxstep set by the user or stochastic end events have been disabled
           timestep = maxstep 
           	// I set this in case the timestep chosen with Gillespie made v and x so different that the force was greatly altered
           ap[i][j]=1 // No reaction occurs, MT continues to be in assembly
@@ -208,7 +211,7 @@ function kpsim(tott,maxstep,N)
           done = 1 // end simulation
           endtip = j // MT j detached
           last_end_event = 2 // end event is detachment during assembly
-        else // Reaction chosen with Gillespie algorithm is catastrophe
+        elseif(switch_on == 1) // Reaction chosen with Gillespie algorithm is catastrophe
           ap[i][j]=0  // MT switches to disassembly
           state_switches_per_run += 1 
             // increase the counter of number of switches from/to assembly/disassembly in this event
@@ -233,7 +236,8 @@ function kpsim(tott,maxstep,N)
       else // kchore is in disassembly
         timestep = -ln(abs(enoise(1)))/(Wr(cforce[j])+Wdetd(cforce[j]))
         		// timestep chosen from integral of cumulative distribution function at the current force values
-        if(timestep > maxstep) // timestep exceeds the maxstep set by the user
+        if(timestep > maxstep || (switch_on == 0 && detach_on == 0)) 
+        		// timestep exceeds the maxstep set by the user or stochastic end events have been disabled
           timestep = maxstep
           	// I set this in case the timestep chosen with Gillespie made v and x so different that the force was greatly altered
           ap[i][j]=0 // No reaction occurs, MT continues to be in disassembly
@@ -242,7 +246,7 @@ function kpsim(tott,maxstep,N)
           done = 1 // end simulation
           endtip = j // MT j detached
           last_end_event = 3 // end event is detachment during disassembly
-        else // Reaction chosen with Gillespie algorithm is rescue
+        elseif(switch_on == 1) // Reaction chosen with Gillespie algorithm is rescue
           ap[i][j]=1 // kchore switches to assembly
           state_switches_per_run += 1
             // increase the counter of number of switches from/to assembly/disassembly in this event
