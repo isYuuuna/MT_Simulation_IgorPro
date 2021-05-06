@@ -192,19 +192,16 @@ function kpsim(tott,maxstep,N)
         endtip = j // MT j was under the low-tension limit
         last_end_event = 4 // end event is low-tension limit violation
 //      	print("Tip " + num2str(j) + " failed by exceeding the compressive limit of " + num2str(low_t_limit) + " pN")
-        // This used to be an output to say how the event ended, but I stopped using it
-        // when I started color-coding the endpoint
+        // This used to be an output to say how the event ended, but I stopped using it when I started color-coding the endpoint
       endif
     
     // based on system state, pick a reaction and timestep using Gillespie algorithm
       if(cap[j]==1) // kchore is in assembly
         timestep = -ln(abs(enoise(1)))/(Wc(cforce[j])+Wdeta(cforce[j])) 
-        		// timestep chosen from integral of cumulative distribution function
-        		// at the current force values
+        		// timestep chosen from integral of cumulative distribution function at the current force values
         if(timestep > maxstep) // timestep exceeds the maxstep set by the user
           timestep = maxstep 
-          	// I set this in case the timestep chosen with Gillespie made v and x
-            // so different that the force was greatly altered
+          	// I set this in case the timestep chosen with Gillespie made v and x so different that the force was greatly altered
           ap[i][j]=1 // No reaction occurs, MT continues to be in assembly
         elseif(abs(enoise(1))<(Wdeta(cforce[j])/(Wdeta(cforce[j])+Wc(cforce[j]))) && detach_on == 1)
           // pick a reaction with Gillespie algorithm (detach or catastrophe)
@@ -216,51 +213,54 @@ function kpsim(tott,maxstep,N)
           state_switches_per_run += 1 
             // increase the counter of number of switches from/to assembly/disassembly in this event
           if(single_state == 1) // catastrophes end the simulation in single-state experiments
-          	last_end_event = 0 // current end event is catastrophe
+          	last_end_event = 0 // end event is catastrophe
           	done = 1 // end the simulation
           	endtip = j // MT j catastrophed
           endif
         endif
         
-        // update velocity based on force and position based on velocity
+        // update assembly velocity based on force and position based on velocity
         if(different_velocities == 1) 
-        		// calculate assembly velocities based on chosen "intrinsic" velocity
-        		// of the given tip
+        		// calculate assembly velocity based on chosen unloaded velocity of MT j
         		vp[i][j] = va_intrinsic[j]*exp(cforce[j]/w[5])/1000
-        			// uses intrinsic unloaded velocity with the same exponential force relation
+        			// calculates current velocity with unloaded velocity and exponential dependence on force
         else
         		vp[i][j]=U(cforce[j]) 
-        			// use average unloaded velocity with the same exponential force relation
+        			// use average unloaded assembly velocity with the same exponential dependence on force
         endif
         xp[i][j]=cxp[j]+vp[i][j]*timestep  // update position using new velocity
         
-      else // kchore is moving P
+      else // kchore is in disassembly
         timestep = -ln(abs(enoise(1)))/(Wr(cforce[j])+Wdetd(cforce[j]))
-        		// timestep chosen from integral of cumulative distribution function
-        		// at the current force values
+        		// timestep chosen from integral of cumulative distribution function at the current force values
         if(timestep > maxstep) // timestep exceeds the maxstep set by the user
           timestep = maxstep
-          	// I set this in case the timestep I chose made v and x so different that the force was greatly altered
+          	// I set this in case the timestep chosen with Gillespie made v and x so different that the force was greatly altered
           ap[i][j]=0 // No reaction occurs, MT continues to be in disassembly
         elseif(abs(enoise(1))<(Wdetd(cforce[j])/(Wdetd(cforce[j])+Wr(cforce[j]))) && detach_on == 1)
-          //low_tension_limit == 1 ends the simulation for either rescue or detachment if the MT is in disassembly
-          // pick a reaction with Gillespie algorithm (detach or rescue)
-          done = 1 // end simulation because of detachment
+          // pick a reaction with Gillespie algorithm (detach or rescue) if detach is on
+          done = 1 // end simulation
           endtip = j // MT j detached
-          last_end_event = 3 // current end event is detachment during disassembly
-        else // chosen reaction is rescue
-          ap[i][j]=1 // kchore switches to AP
+          last_end_event = 3 // end event is detachment during disassembly
+        else // Reaction chosen with Gillespie algorithm is rescue
+          ap[i][j]=1 // kchore switches to assembly
           state_switches_per_run += 1
+            // increase the counter of number of switches from/to assembly/disassembly in this event
           if(single_state == 1) // rescues end the simulation in single-state experiments
-          	last_end_event = 1 // current end event is rescue
+          	last_end_event = 1 // end event is rescue
           	done = 1 // end the simulation
           	endtip = j // MT j rescued
           endif
         endif
+
+        // update disassembly velocity based on force and position based on velocity
         if(different_dvelocities == 1)
+            // calculate disassembly velocity based on chosen unloaded velocity of MT j
         	 vp[i][j] = vd_intrinsic[j]*exp(cforce[j]/w[7])/1000
+                // calculates current velocity with unloaded velocity and exponential dependence on force
         else
         	 vp[i][j]=-V(cforce[j]) // update velocity with current force
+                // use average unloaded disassembly velocity with the same exponential dependence on force
         endif
         xp[i][j]=cxp[j]+vp[i][j]*timestep // update position using new velocity
       endif
