@@ -138,7 +138,7 @@ function kpsim(tott,maxstep,N)
   wave endpoint, endtime // waves with endpoint and corresponding time
   wave last_end_event // tells whether the run has ended because of catastrophe (0),
   							// rescue (1), detachment during assembly (2) or disassembly (3),
-  							// or a compression limit violation (4)
+  							// or a low-tension limit violation (4)
   wave va_intrinsic,vd_intrinsic 
   		// waves containing unloaded assembly and disassembly velocities for each MT [nm/s]
   
@@ -176,41 +176,45 @@ function kpsim(tott,maxstep,N)
     
     // calculate force on each tip based on current system state
     if(ffnc == 0) // Use the standard model
-      pforce1(N) // Puts force values in the cforce wave
+      pforce1(N) // Puts force values in the cforce wave based on parallel MT model
     else // uses force-time function that results in max failure rate at a positive value
-   //   pforce_offset() // fills cforce wave based on the user-input function and time
+        // this function hasn't been used for a while, not sure if it still works
+   //   pforce_offset() // fills cforce wave based on the user-input function and current time
     endif
     
-    // compute changes to MT velocity and position
+    // compute changes to MT velocity and position based on current force
     for(j=0;j<N;j++) // for each MT tip
     
-    	// check for compression limit violation
-      if(cforce[j] < low_t_limit && low_tension_limit == 0) // if the compression limit is on
-      		// and the force on the tip is less than that compression limit
-        done = 1 // end simulation if an MT is over the single MT compression limit
-        endtip = j // MT j was over the compressive limit
-        last_end_event = 4 // current end event is compression limit violation
+    	// check for low-tension limit violation
+      if(cforce[j] < low_t_limit && low_tension_limit == 0) // if the low-tension limit is on
+      		// and the force on the tip is less than that low-tension limit
+        done = 1 // end simulation
+        endtip = j // MT j was under the low-tension limit
+        last_end_event = 4 // end event is low-tension limit violation
 //      	print("Tip " + num2str(j) + " failed by exceeding the compressive limit of " + num2str(low_t_limit) + " pN")
+        // This used to be an output to say how the event ended, but I stopped using it
+        // when I started color-coding the endpoint
       endif
     
     // based on system state, pick a reaction and timestep using Gillespie algorithm
-      
-      if(cap[j]==1) // kchore is moving AP
+      if(cap[j]==1) // kchore is in assembly
         timestep = -ln(abs(enoise(1)))/(Wc(cforce[j])+Wdeta(cforce[j])) 
         		// timestep chosen from integral of cumulative distribution function
         		// at the current force values
         if(timestep > maxstep) // timestep exceeds the maxstep set by the user
           timestep = maxstep 
-          	// I set this in case the timestep I chose made v and x so different that the force was greatly altered
+          	// I set this in case the timestep chosen with Gillespie made v and x
+            // so different that the force was greatly altered
           ap[i][j]=1 // No reaction occurs, MT continues to be in assembly
         elseif(abs(enoise(1))<(Wdeta(cforce[j])/(Wdeta(cforce[j])+Wc(cforce[j]))) && detach_on == 1)
           // pick a reaction with Gillespie algorithm (detach or catastrophe)
-          done = 1 // end simulation because of detachment
+          done = 1 // end simulation
           endtip = j // MT j detached
-          last_end_event = 2 // current end event is detachment during assembly
-        else // chosen reaction is catastrophe
+          last_end_event = 2 // end event is detachment during assembly
+        else // Reaction chosen with Gillespie algorithm is catastrophe
           ap[i][j]=0  // MT switches to disassembly
           state_switches_per_run += 1 
+            // increase the counter of number of switches from/to assembly/disassembly in this event
           if(single_state == 1) // catastrophes end the simulation in single-state experiments
           	last_end_event = 0 // current end event is catastrophe
           	done = 1 // end the simulation
