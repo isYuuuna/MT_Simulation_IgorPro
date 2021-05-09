@@ -1,0 +1,205 @@
+#pragma TextEncoding = "UTF-8"
+#pragma rtGlobals=3		// Use modern global access method and strict wave access.
+
+//-----------------------------------------------------------------------------------------------
+// This IPF contains three separate means I devised to calculate unloaded MT assembly 
+// velocities based on the data in the 2010 Akiyoshi paper.
+
+//-----------------------------------------------------------------------------------------------
+// First of three methods to calculate the unloaded MT assembly velocities.
+// 
+// For each of N MTs, this method chooses a velocity bin from the histogram data with probability
+// proportional to the number of velocities in that bin. The average of the bin's velocity data
+// is added to a normally-distributed noise component with a mean of 0 and a standard deviation of
+// the standard error of that velocity bin times the square root of the number of velocities 
+// in that bin. (So it should have the same standard deviation as the data in that bin, with the
+// ASSUMPTION that the data is gaussian)
+// The unloaded velocity was then extrapolated by dividing the computed "loaded" velocity by 
+// the exponential that describes how velocity changes in response to force, exp(F/Fs), where
+// F is force and Fs is the force-sensitivity of velocity.
+function avelocity_choose(N)
+	variable N // N MTs
+	wave w // parameter wave
+	variable Fg = w[5] // force sensitivity of growth velocity
+	wave na // number of observations for the average velocities listed
+	wave avel,eavel // average assembly velocities at different forces and SEM from Akiyoshi 2010
+	wave rateF // force bins
+	variable i,j // counter
+	variable num_velocities = sum(na) // number of velocity measurements
+	wave va_intrinsic // intrinsic unloaded assembly velocity
+	variable velocity_pick, SD 
+		// velocity index chosen at random and standard deviation of values in the corresponding bin
+	variable index_na = na[0] 
+		// number of measurements at the velocity bin index that the program is checking to see if
+		// velocity_pick is higher or lower than.
+	for(i=0;i<N;i++) // For each MT tip
+		velocity_pick =  round(abs(enoise(1)*num_velocities)) 
+			// chooses a random integer from 0 to the number of measured velocities 
+		if(velocity_pick == 0) // this is here to make identical probabilities for each velocity value
+			velocity_pick = num_velocities 
+				// since there is no 0th measurement, if the random number was rounded to 0,
+				// make the index the index of the last measurement, which is only half as likely
+				// to be picked since it can only be reached by rounding up, evening the probability
+				// for each index
+		endif
+		for(j=0;j<numpnts(na);j++) // for each velocity bin
+			if(velocity_pick<=index_na) 
+				// if the random number chosen is less than the current index of velocity measurements
+				va_intrinsic[i] = avel[j] 
+					// set the "intrinsic" unloaded assembly velocity of this MT to the average velocity
+					// of the current bin
+				SD = sqrt(na[j])*eavel[j] // standard_deviation = standard_error*sqrt(number_of_values)
+				va_intrinsic[i] += gnoise(SD) 
+					// adds a random noise element with a normal distribution and the calculated standard
+					// deviation to the velocity
+				va_intrinsic[i] = va_intrinsic[i]/exp(rateF[j]/Fg) // convert to unloaded velocity
+			else
+				index_na += na[j+1] 
+				// add the number of measurements in the next velocity bin to the running total
+			endif
+		endfor
+		if(va_intrinsic[i] < 0) // disallows negative velocities
+			i = i - 1 // try that tip again
+		endif
+	endfor
+end
+//-------------------------------------------------------------------------------------------------
+// Second of three methods to calculate the unloaded MT assembly velocities.
+// 
+// First, this method combines the data by extrapolating the unloaded velocity from the average loaded
+// velocity measurement of each bin. The loaded velocities are divided by the exponentials that
+// describe how velocity changes in response to force, exp(F/Fs), where F is the average force of 
+// the corresponding force bins and Fs is the force-sensitivity of velocity.
+// Next, an overall mean unloaded velocity is calculated by taking an average of these unloaded
+// velocities, weighted by the number of measurements in the corresponding velocity bin.
+// Next, the standard errors of each velocity bin were combined and converted to an overall standard
+// deviation for all velocity measurements using math as described in the image titled 
+// "Combining Binned Velocities" in the "Math Explanations" folder.
+// Finally, for each tip, the weighted average of unloaded velocities is added to a 
+// normally-distributed noise component with a mean of 0 and the standard deviation of all 
+// unloaded velocities as computed above.
+// This method still assumes that the data is gaussian.
+
+function avelocity_choose_v2(N)
+	variable N // N MTs
+	wave w // parameter wave
+	variable Fg = w[5] // force sensitivity of growth velocity
+	wave na // number of observations for the average velocities listed
+	wave avel,eavel // average assembly velocities at different forces and SEM from Akiyoshi 2010
+	wave rateF // force bins
+	wave va_intrinsic // intrinsic unloaded assembly velocity
+	make/o/n=(numpnts(rateF)) unloaded_average_velocities,weighted_average_v,squared_weighted_error
+	 // wave to hold unloaded velocities for calculating mu
+	variable i // counter
+	variable num_velocities = sum(na) // number of velocity measurements
+	variable SEM,SD // standard error and deviation for all measured velocities
+	variable mu // average for all measured velocities
+	// Calculate unloaded average velocities from loaded ones provided
+	wave cap // current direction of MT tip movement
+	for(i=0;i<numpnts(avel);i++) // for each velocity bin
+		unloaded_average_velocities[i] = avel[i]/exp(rateF[i]/Fg) // calculates unloaded velocity
+		weighted_average_v[i] = unloaded_average_velocities[i]*na[i] 
+			// weights average unloaded velocity of each bin according to the number of measurements
+			// in that bin
+		squared_weighted_error[i] = (eavel[i]*na[i]/exp(rateF[i]/Fg)/num_velocities)^2
+			// Finds squared, weighted standard error of unloaded velocities for each bin
+	endfor
+	// Calculate standard deviation and mean for all measured velocities
+	mu = sum(weighted_average_v)/num_velocities // weighted average based on number of observations in each force bin
+	SEM = sqrt(sum(squared_weighted_error)) // standard error of combined distribution
+	SD = SEM*sqrt(num_velocities) // convert from standard error to standard deviation
+	for(i=0;i<N;i++) // for each MT
+		if(cap[i] == 1) // if the current MT is in assembly
+			va_intrinsic[i] = mu + gnoise(SD) 
+				// adds a random noise element to velocity with the same SD as the extrapolated
+				// unloaded velocities from the data
+			if(va_intrinsic[i] < 0) // disallows negative velocities
+				i = i - 1 // try again
+			endif
+		endif
+	endfor
+end
+
+//-------------------------------------------------------------------------------------------------
+// Third of three methods to calculate the unloaded MT assembly velocities.
+// 
+// First, unloaded velocities are calculated by dividing loaded velocities by the exponentials 
+// that describe how velocity changes in response to force, exp(F/Fs), where F is the average 
+// force of the corresponding force bins and Fs is the force-sensitivity of velocity.
+// Next, this method removes velocities that are outlier-ish-ly large.
+// Next, for each MT, an index is chosen at random from a uniform distribution with range equal to
+// the number of velocity measurements. The chosen index corresponds to the unloaded velocity that
+// will be the MT's "intrinsic" assembly speed.
+// This method no longer assumes that the data is gaussian.
+function avelocity_choose_v3(N)
+	variable N // N MTs
+	wave w // parameter wave
+	variable Fg = w[5] // force sensitivity of growth velocity
+	wave unloaded_velocities // measured forces and corresponding MT assembly velocities from Akiyoshi et al 2010
+	variable i // counter
+	wave cap // current direction of MT tip movement
+	wave va_intrinsic // intrinsic unloaded assembly velocity
+	variable index // index of chosen velocity
+	
+	// Calculates all unloaded velocities based on the Akiyoshi data
+	unloaded_velocity_distribution()
+	
+	// Remove weirdly big assembly velocities (>20 um/s)
+	remove_large_v()
+	
+	variable Nv =  dimsize(unloaded_velocities,0) // number of velocities in Akiyoshi paper table
+	
+	// Choose velocity from the table at random
+	for(i=0;i<N;i++) // for each MT
+		index = abs(round(enoise(Nv)))
+		if(index == Nv) // if the index is the number of velocities
+			index = 0 
+				// corrects for 0th index having half the probability of being picked compared to other indices
+				// Since there is no measurement the length of the vector (since indexing starts at 0),
+				// if the random number was rounded to the total number of velocities, this
+				// makes the index 0, which is only half as likely to be picked since it can only 
+				// be reached by rounding down, evening the probability for each index
+		endif
+		va_intrinsic[i] = unloaded_velocities[index]
+				// gets the unloaded velocity at the chosen index
+	endfor
+end
+
+//-------------------------------------------------------------------------------------------
+// This method creates a wave and a corresponding histogram with all unloaded velocities extrapolated
+// from loaded velocities measured in the 2010 Akiyoshi paper.
+// Unloaded velocities are calculated by dividing loaded velocities by the exponentials 
+// that describe how velocity changes in response to force, exp(F/Fs), where F is the average 
+// force of the corresponding force bins and Fs is the force-sensitivity of velocity.
+
+function unloaded_velocity_distribution()
+	variable i // counter
+	wave w // parameter wave
+	variable Fg = w[5] // force senstivity of growth velocity
+	wave force_velocity_table_akiyoshi // measured velocities under load
+	make/o/n=(dimsize(force_velocity_table_akiyoshi,0)) unloaded_velocities,unloaded_velocities_hist
+	for(i=0;i<numpnts(unloaded_velocities);i++) // for each measured velocity
+		unloaded_velocities[i] = force_velocity_table_akiyoshi[i][1] // loaded velocities from Akiyoshi
+		unloaded_velocities[i] = unloaded_velocities[i]/exp(force_velocity_table_akiyoshi[i][0]/Fg)
+			// conversion from loaded to unloaded velocities using forces and force sensitivities
+	endfor
+	histogram /B={0,1,50} unloaded_velocities,unloaded_velocities_hist
+		// Makes a histogram wave with 50 bins of size 1 nanometer per second
+end
+
+//--------------------------------------------------------------------------------------------------
+// This function removes velocities that are larger than 15 nm per second, since they usually force
+// a compression limit violation and seem like they might be mistakes in any case.
+// Maybe the kinetochore was only attached near, not at the tip?
+
+function remove_large_v()
+	variable i // counter
+	wave unloaded_velocities 
+		// velocities from Akiyoshi 2010 extrapolated from loaded to unloaded using the functions above.
+	for(i=0;i<numpnts(unloaded_velocities);i++) // for each velocity measurement
+		if(unloaded_velocities[i]>15) // if the unloaded velocity at this index is bigger than 15
+			deletepoints i,1,unloaded_velocities // delete the velocity at this index
+			i = i-1
+		endif
+	endfor
+end

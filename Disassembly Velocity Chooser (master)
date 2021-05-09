@@ -1,0 +1,87 @@
+#pragma TextEncoding = "UTF-8"
+#pragma rtGlobals=3		// Use modern global access method and strict wave access.
+
+//-------------------------------------------------------------------------------------------------
+// Draws unloaded disassembly velocity from a distribution of loaded disassembly velocities.
+// 
+// First, unloaded disassembly velocities are calculated by dividing loaded velocities by the exponentials 
+// that describe how velocity changes in response to force, exp(F/Fs), where F is the average 
+// force of the corresponding force bins and Fs is the force-sensitivity of velocity.
+// Next, this method removes disassembly velocities that are outlier-ish-ly large or small.
+// Next, for each MT, an index is chosen at random from a uniform distribution with range equal to
+// the number of velocity measurements. The chosen index corresponds to the unloaded velocity that
+// will be the MT's "intrinsic" assembly speed.
+
+function dvelocity_choose(N)
+	variable N // N MTs
+	wave w // parameter wave
+	variable Fs = w[7] // force sensitivity of disassembly velocity
+	wave unloaded_disassembly_velocities 
+		// measured forces and corresponding MT disassembly velocities from Akiyoshi et al 2010
+	variable i // counter
+	wave vd_intrinsic // intrinsic unloaded disassembly velocity
+	variable index // index of chosen velocity
+	
+	// Calculates all unloaded velocities based on the Akiyoshi data
+	unloaded_velocity_distribution_disassembly()
+	
+	// Remove weirdly small and large disassembly velocities (<50 nm/s, >300 nm/s)
+	remove_small_large_v()
+	
+	variable Nv =  dimsize(unloaded_disassembly_velocities,0) 
+		// number of velocities in Akiyoshi paper table after cutting out large and small velocities
+	
+	// Choose velocity from the table at random
+	for(i=0;i<N;i++) // for each MT
+		index = abs(round(enoise(Nv))) // chooses a random positive number from 0 to Nv
+		if(index == Nv) // if the index is the number of velocities
+			index = 0 
+				// corrects for 0th index having half the probability of being picked compared to other indices
+				// Since there is no measurement the length of the vector (since indexing starts at 0),
+				// if the random number was rounded to the total number of velocities, this
+				// makes the index 0, which is only half as likely to be picked since it can only 
+				// be reached by rounding down, evening the probability for each index
+		endif
+		vd_intrinsic[i] = unloaded_disassembly_velocities[index]
+				// gets the unloaded velocity at the chosen index
+	endfor
+end
+
+//-------------------------------------------------------------------------------------------
+// This method creates a wave and a corresponding histogram with all unloaded disassembly
+// velocities extrapolated from loaded velocities measured in the 2010 Akiyoshi paper.
+// Unloaded velocities are calculated by dividing loaded velocities by the exponentials 
+// that describe how velocity changes in response to force, exp(F/Fs), where F is the average 
+// force of the corresponding force bins and Fs is the force-sensitivity of velocity.
+
+function unloaded_velocity_distribution_disassembly()
+	variable i // counter
+	wave w // parameter wave
+	variable Fs = w[7] // force senstivity of disassembly velocity
+	wave force_velocity_table_akiyoshi_disassembly // measured velocities under load
+	make/o/n=(dimsize(force_velocity_table_akiyoshi_disassembly,0)) unloaded_disassembly_velocities,unloaded_disassembly_velocities_hist
+	for(i=0;i<numpnts(unloaded_disassembly_velocities);i++) // for each measured velocity
+		unloaded_disassembly_velocities[i] = force_velocity_table_akiyoshi_disassembly[i][1] // loaded velocities from Akiyoshi
+		unloaded_disassembly_velocities[i] = unloaded_disassembly_velocities[i]/exp(force_velocity_table_akiyoshi_disassembly[i][0]/Fs)
+			// conversion from loaded to unloaded velocitiprintes using forces and force sensitivities
+	endfor
+	histogram /B={-700,100,7} unloaded_disassembly_velocities,unloaded_disassembly_velocities_hist
+		// Makes a histogram wave with 7 bins of size 100 nm/s starting at -700 nm/s
+end
+
+//--------------------------------------------------------------------------------------------------
+// This function removes velocities that are larger than 300 nm/s and smaller than 50 nm/s,
+// since they generally pretty drastically change the simulation outcome
+
+function remove_small_large_v()
+	variable i // counter
+	wave unloaded_disassembly_velocities 
+		// velocities from Akiyoshi 2010 extrapolated from loaded to unloaded using the functions above.
+	for(i=0;i<numpnts(unloaded_disassembly_velocities);i++) // for each velocity measurement
+		if(unloaded_disassembly_velocities[i]<-300 || unloaded_disassembly_velocities[i]>-50) // if the unloaded velocity at this index is bigger than 15
+			deletepoints i,1,unloaded_disassembly_velocities // delete the velocity at this index
+			i -= 1 // If a point was deleted, try the same point number again since it is really
+					// next velocity that has not been filtered for size
+		endif
+	endfor
+end

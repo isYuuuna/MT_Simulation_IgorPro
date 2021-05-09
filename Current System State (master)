@@ -1,0 +1,98 @@
+#pragma TextEncoding = "UTF-8"
+#pragma rtGlobals=3		// Use modern global access method and strict wave access.
+
+// 'rescue' probability (i.e. probability for a P-to-AP transition)
+function Wr(F)
+  variable F // tensile force transmitted between sister KTs through chromatin
+  variable comp1 // dummy variable
+  wave w // holds needed values as indicated below
+  
+  //variable kno = 86 // unloaded rescue rate [1/hr], from Akiyoshi 2010
+  //variable Fn = 6.4 // force required for e-fold change [pN], from Akiyoshi 2010
+  variable kno = w[0] // unloaded rescue rate [1/hr]
+  variable Fn = w[1] // force required for e-fold change [pN]
+  comp1 = kno * exp(F/Fn) / 3600 // expected number of rescues per s [1/s]
+  return comp1 
+end
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// 'catastrophe' probability (i.e. probability for a AP-to-P transition)
+function Wc(F)
+  variable F // tensile force transmitted between sister KTs through chromatin
+  variable comp1 // dummy variable
+  wave w // holds needed values as indicated below
+    
+  //variable kno = 6.7 // unloaded catastrophe rate [1/hr], from Akiyoshi 2010
+  //variable Fn = -2.3 // force required for e-fold change [pN], from Akiyoshi 2010
+  variable kno = w[2] // unloaded catastrophe rate [1/hr]
+  variable Fn = w[3] // force required for e-fold change [pN]
+  comp1 = kno * exp(F/Fn) / 3600 // expected number of catastrophes per s [1/s]
+  return comp1 
+end
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// 'growth' speed (i.e., speed of AP movement)
+function U(F)
+  variable F // tensile force transmitted between sister KTs through chromatin
+  variable comp1 // dummy variable
+  wave w // holds needed values as indicated below
+    
+  //variable kno = 4.9 // unloaded growth speed [nm/s], from Akiyoshi 2010
+  //variable Fn = 8.4 // force required for an e-fold change [pN], from Akiyoshi 2010
+  variable kno = w[4] // unloaded growth speed [nm/s]
+  variable Fn = w[5] // force required for e-fold change [pN]
+  comp1 = kno * exp(F/Fn) / 1000 // growth speed in units of [um/s]
+  return comp1
+end
+//-----------------------------------------------------
+function Wdeta(F)
+  variable F // tensile force
+  variable rate // rate of detachment during assembly
+  wave w
+  variable ko_a = w[11] // unloaded detachment rate during assembly
+  variable Fa = w[12] // force required for an e-fold change [pN]
+  
+  rate = ko_a * exp(F/Fa) / 3600 // expected rate of detachment per s
+  return rate
+end
+//-----------------------------------------------------
+function Wdetd(F)
+  variable F // tensile force
+  variable rate // rate of detachment during assembly
+  wave w
+  variable ko_d = w[13] // unloaded detachment rate during disassembly
+  variable Fd = w[14] // force required for an e-fold change [pN]
+  
+  rate = ko_d * exp(F/Fd) / 3600 // expected rate of detachment per s
+  return rate
+end
+//---------------------------------------------------------------------------------------------------------------------------------------//
+// 'shortening' speed (i.e., speed of P movement)
+function V(F)
+  variable F // tensile force transmitted between sister KTs through chromatin
+  variable comp1 // dummy variable
+  wave w // holds needed values as indicated below
+     
+  //variable kno = 210 // unloaded shortening speed [nm/s], from Aikyoshi 2010
+  //variable Fn = -3.0 // force required for an e-fold change [pN], from Akiyoshi 2010
+  variable kno = w[6] // unloaded shortening speed [nm/s]
+  variable Fn = w[7] // force required for an e-fold change [pN]
+  comp1 = kno * exp(F/Fn) / 1000 // shortening speed in units of [um/s]
+  return comp1
+end
+
+//-----------------------------------------------------------------
+// force (tension) on 1st tip for the case of N parallel MTs
+function pforce1(N)
+  variable N // number of parallel MTs
+  wave w // holds needed values as indicated below
+  wave cforce // Tensile force on each MT
+  wave cxp // positions for all parallel MTs [um]
+
+  variable k = w[8] // spring constant [pN/um]  
+  variable gama = w[9] // damping constant [pN*s/um]
+  variable F_tot = w[10] // total force shared across the two MTs [pN] 
+  variable i
+   
+  for(i=0;i<N;i++)
+    cforce[i] = (F_tot + k*(sum(cxp)-N*cxp[i]))/N// Force on MT  
+  endfor
+end
