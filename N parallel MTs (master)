@@ -298,6 +298,12 @@ function kpsim(tott,maxstep,N)
   endif
   ModifyGraph /W=x_vs_t mode(endpoint)=2,lsize(endpoint)=10 // make the endpoint bigger and a dot
   
+  String legendText = "\s(x_vs_t.xp) MT 0"
+  for(j=1;j<max(N,5);j++)
+  		legendText += "\r\s(x_vs_t.xp#" + num2str(j) + ") MT " + num2str(j) 
+  endfor
+  Legend /C/N=MT_legend /W=x_vs_t legendText
+
   // delete unfilled entries if the simulation ended earlier than the specified
   // maximum runtime
   deletepoints i,(maxit-i),xp
