@@ -1,5 +1,4 @@
 #pragma rtGlobals=3		// Use modern global access method and strict wave access.
-// new change
 // May 5: Test master branch
 //---------------------------------------------------------------------------------------------------------------------------------------//
 // 17_0117 Chip revisiting this Monte Carlo simulation but in a much simpler context
@@ -45,8 +44,7 @@ function kpsim_initialize(tott,maxstep,N)
   variable initially_coordinated = o[0] // boolean that says if both MTs start out assembling or if one is in disassembly
   variable unloaded_gvel = w[4] // unloaded average growth velocity [nm/s]
   variable unloaded_svel = w[6] // unloaded average shortening velocity [nm/s]
-  
-  
+    
 // one year in the lab and I'm already making waves!
   
   make/o/n=(N) va_intrinsic,vd_intrinsic // unloaded assembly/disassembly velocity for each MT
@@ -296,14 +294,14 @@ function kpsim(tott,maxstep,N)
   elseif(single_state == 1) // MT switched states
     appendtograph /W=x_vs_t /C=(0,0,65535),endpoint vs endtime // blue for state switch
   endif
-  ModifyGraph /W=x_vs_t mode(endpoint)=2,lsize(endpoint)=10 // make the endpoint bigger and a dot
+  ModifyGraph /Z/W=x_vs_t mode(endpoint)=2,lsize(endpoint)=10 // make the endpoint bigger and a dot
   
   String legendText = "\s(x_vs_t.xp) MT 0"
   for(j=1;j<max(N,5);j++)
   		legendText += "\r\s(x_vs_t.xp#" + num2str(j) + ") MT " + num2str(j) 
   endfor
   Legend /C/N=MT_legend /W=x_vs_t legendText
-
+  
   // delete unfilled entries if the simulation ended earlier than the specified
   // maximum runtime
   deletepoints i,(maxit-i),xp
@@ -315,6 +313,7 @@ function kpsim(tott,maxstep,N)
 
   wavestats/q coordflag // calculates V_avg below and describes what proportion
   		// of time the MTs are moving in the same direction for multi-state experiments
+ 
   
   return V_avg // returns average from the last wavestats (coordflag)
 end
@@ -328,10 +327,10 @@ function kpsim_rep(tott,maxstep,num,N)
   variable N // number of parallel MTs
   variable maxit = round(tott/maxstep) + 1 // maximum number of iterations per
   wave tp,endpoint // time for each MT
-  wave xp,vp // position and velocity for each MT
+  wave xp,vp,force // position, velocity, and force for each MT
   variable i,j // counters
   variable hist_step = 30 // bin size for histogram
-  wave o // wave with simulation conditions
+  wave o,w // wave with simulation conditions
   wave state_switches_per_run
   make/o/n=(5) end_event 
   //0: catastrophe, 1:rescue, 2:detach during assembly, 3: detach during disassembly,4: over compression limit
@@ -347,6 +346,14 @@ function kpsim_rep(tott,maxstep,num,N)
     // wave to hold average coord level, simulation time, and 
     // distance of tips from each other for each repeat
   make/o/n=(num) avgt_50,avgt_100,avgt_150,avgt_200,avgt_250,avgt_300,avgt_350,avgt_400,avgt_450,avgt_500,avgt_550,avgt_600,avgt_650,avgt_700,avgt_750,avgt_800,avgt_850,avgt_900,avgt_950,avgt_1000,avgt_1050,avgt_1100,avgt_1150
+  make/o/n=(maxit,N,10) x_save, v_save, t_save, f_save = 0
+  	// waves for saving
+  
+  variable save_data = o[10]
+  		// boolean that tells program to save the first 10 traces
+  		// saves time, position, velocity, and force
+  		// also records parameter and options wave for this data
+
 
   avgt_50 = 0
   avgt_100 = 0
@@ -643,6 +650,12 @@ function kpsim_rep(tott,maxstep,num,N)
     	front_tip_catastrophe[i] = 0
     	back_tip_catastrophe[i] = 0
     endif
+    
+    if(save_data == 1 && i < 10)
+    	compile_data_for_save(i)
+	 endif
+
+    
   endfor
     
   deletepoints end_event[0],(num-end_event[0]-1),avgt_c // -1 gives one extra 0 timepoint to each histogram
@@ -668,6 +681,38 @@ function kpsim_rep(tott,maxstep,num,N)
   hist_t_comp_normal = hist_t_comp/(num*hist_step)
 
   // histograms for end events
+    if(save_data == 1)
+    	Save_my_data()
+	 endif
+
+end
+//-----------------------------------
+//
+function compile_data_for_save(i)
+	variable i // ith iteration that has been saved
+	wave tp,xp,vp,force
+	wave x_save,t_save,v_save,f_save
+	variable j,k // counters
+
+	for(j=0;j<dimsize(xp,1);j++)
+		for(k=0;k<dimsize(xp,0);k++)
+			x_save[k][j][i] = xp[k][j]
+			v_save[k][j][i] = tp[k][j]
+			t_save[k][j][i] = vp[k][j]
+			f_save[k][j][i] = force[k][j]
+		endfor
+	endfor
+end
+
+function Save_my_data()
+	variable j // counter
+	wave o,w
+
+    	 string File_name = "k="+num2str(w[8])+"_"+"F="+num2str(w[10])+"_rawdata_o_"
+    	 for(j=0;j<numpnts(o);j++)
+    	 	File_name += num2str(o[j])
+    	 endfor
+	    savedata /J="t_save;x_save;v_save;f_save;w;o;" File_name
 end
 //----------------------------------------------------------------------------------
 // The functions below haven't been used for a while
