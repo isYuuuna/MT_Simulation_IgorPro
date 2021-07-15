@@ -1,0 +1,8 @@
+*.pxp filter=lfs diff=lfs merge=lfs -text
+/Assembly Velocity Chooser (master) filter=lfs diff=lfs merge=lfs -text
+/Current System State (master) filter=lfs diff=lfs merge=lfs -text
+*.ipf filter=lfs diff=lfs merge=lfs -text
+/Disassembly Velocity Chooser (master) filter=lfs diff=lfs merge=lfs -text
+*.pages filter=lfs diff=lfs merge=lfs -text
+/N parallel MTs (master) filter=lfs diff=lfs merge=lfs -text
+*.md filter=lfs diff=lfs merge=lfs -text
