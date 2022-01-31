@@ -10,8 +10,9 @@ make/o/n = (numpnts(input)/factor) decimated = nan
 decimated = input[p*factor]
 end function
 
-
-
+// This tdetector function is based on the MATLAB code in 'Molecular counting by photobleaching...'
+// Because this algorithm declares way too many steps, we could change the z-score multiplier as a way
+// to decrease the number of declared steps. 
 function tdetector(X, VO)
 wave X // vector of a piecewise constant function hidden in white noise
 variable VO
@@ -517,10 +518,6 @@ step[count][0] = T
 step[count][1] = P
 count++
 anySectionLeft = 2*anySectionLeft
-detector()
- 
-
-
 end function
 
 //-----------------------------------------------------------------------------------------------------------------------------------------------------
